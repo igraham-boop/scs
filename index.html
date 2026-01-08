@@ -1,0 +1,289 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width,initial-scale=1" />
+  <title>Short Circuit Showdown</title>
+  <style>
+    html, body { margin: 0; padding: 0; background:#000; color:#fff; font-family: Arial, sans-serif; }
+    .wrap { display:flex; justify-content:center; align-items:center; height:100vh; flex-direction:column; gap:12px; }
+    canvas { border: 2px solid #2aff2a; image-rendering: pixelated; }
+    .hint { opacity:.85; font-size:14px; }
+  </style>
+</head>
+<body>
+  <div class="wrap">
+    <canvas id="game" width="800" height="400"></canvas>
+    <div class="hint">ENTER: Start / Back · I: Instructions · Arrows: Move · Space: Jump · A/S/D: Attacks</div>
+  </div>
+
+<script>
+(() => {
+  const canvas = document.getElementById("game");
+  const ctx = canvas.getContext("2d");
+
+  // --- Game States ---
+  const STATE = { TITLE:"title", INSTR:"instr", GAME:"game", WIN:"win", LOSE:"lose" };
+  let state = STATE.TITLE;
+
+  // --- Input ---
+  const keys = new Set();
+  window.addEventListener("keydown", (e) => {
+    keys.add(e.key.toLowerCase());
+
+    // prevent page scroll on arrows/space
+    if (["arrowup","arrowdown","arrowleft","arrowright"," "].includes(e.key.toLowerCase()) || e.key === " ") e.preventDefault();
+
+    if (state === STATE.TITLE) {
+      if (e.key === "Enter") state = STATE.GAME;
+      if (e.key.toLowerCase() === "i") state = STATE.INSTR;
+    } else if (state === STATE.INSTR) {
+      if (e.key === "Enter") state = STATE.TITLE;
+    } else if ([STATE.WIN, STATE.LOSE].includes(state)) {
+      if (e.key === "Enter") resetGame();
+    }
+  }, { passive:false });
+
+  window.addEventListener("keyup", (e) => keys.delete(e.key.toLowerCase()));
+
+  // --- Entities ---
+  const groundY = 320;
+
+  const player = {
+    x: 120, y: groundY, w: 48, h: 96,
+    vx: 0, vy: 0,
+    facing: 1, // 1 right, -1 left
+    hp: 100,
+    onGround: true,
+    attackCooldown: 0,
+    attackType: null,
+    attackTimer: 0,
+  };
+
+  const enemy = {
+    x: 620, y: groundY, w: 48, h: 96,
+    vx: -1.2,
+    hp: 100,
+    attackCooldown: 0,
+  };
+
+  function resetGame() {
+    state = STATE.TITLE;
+    player.x = 120; player.y = groundY; player.vx = 0; player.vy = 0; player.hp = 100;
+    player.onGround = true; player.attackCooldown = 0; player.attackType = null; player.attackTimer = 0;
+    enemy.x = 620; enemy.y = groundY; enemy.vx = -1.2; enemy.hp = 100; enemy.attackCooldown = 0;
+  }
+
+  // --- Helpers ---
+  function rectsOverlap(a, b) {
+    return a.x < b.x + b.w && a.x + a.w > b.x && a.y < b.y + b.h && a.y + a.h > b.y;
+  }
+
+  function drawBar(x, y, w, h, pct, label) {
+    ctx.strokeStyle = "#fff";
+    ctx.strokeRect(x, y, w, h);
+    ctx.fillStyle = "#2aff2a";
+    ctx.fillRect(x, y, Math.max(0, w * pct), h);
+    ctx.fillStyle = "#fff";
+    ctx.fillText(label, x, y - 6);
+  }
+
+  // --- Combat ---
+  function startAttack(type) {
+    if (player.attackCooldown > 0) return;
+    player.attackType = type;
+    player.attackTimer = 10;         // frames active
+    player.attackCooldown = 20;      // frames before next attack
+
+    // Damage + range depend on attack
+    // A: chop (fast), S: knee (medium), D: kick (stronger)
+  }
+
+  function getAttackHitbox() {
+    if (!player.attackType || player.attackTimer <= 0) return null;
+    const range = player.attackType === "a" ? 34 : player.attackType === "s" ? 40 : 50;
+    const height = player.attackType === "a" ? 30 : player.attackType === "s" ? 40 : 28;
+    const y = player.y + 40;
+    const x = player.facing === 1 ? player.x + player.w : player.x - range;
+    return { x, y, w: range, h: height };
+  }
+
+  function applyAttackIfHit() {
+    const hb = getAttackHitbox();
+    if (!hb) return;
+
+    if (rectsOverlap(hb, enemy)) {
+      const dmg = player.attackType === "a" ? 6 : player.attackType === "s" ? 9 : 12;
+      enemy.hp -= dmg;
+
+      // small knockback
+      enemy.x += player.facing * 8;
+
+      // prevent multi-hit in same swing
+      player.attackTimer = 0;
+    }
+  }
+
+  // --- Enemy AI (simple) ---
+  function enemyAI() {
+    // move toward player
+    const dir = player.x - enemy.x;
+    enemy.vx = Math.sign(dir) * 1.4;
+
+    // attack if close
+    const close = Math.abs((player.x + player.w/2) - (enemy.x + enemy.w/2)) < 70;
+    if (close && enemy.attackCooldown <= 0) {
+      enemy.attackCooldown = 35;
+      // enemy attack does damage immediately (simple)
+      player.hp -= 8;
+      // knockback
+      player.x -= Math.sign(dir) * 10;
+    }
+  }
+
+  // --- Update loop ---
+  function update() {
+    if (state !== STATE.GAME) return;
+
+    // Movement
+    player.vx = 0;
+    if (keys.has("arrowleft")) { player.vx = -3.5; player.facing = -1; }
+    if (keys.has("arrowright")) { player.vx = 3.5; player.facing = 1; }
+
+    // Jump
+    if ((keys.has(" ") || keys.has("space")) && player.onGround) {
+      player.vy = -10;
+      player.onGround = false;
+    }
+
+    // Attacks
+    if (keys.has("a")) startAttack("a");
+    if (keys.has("s")) startAttack("s");
+    if (keys.has("d")) startAttack("d");
+
+    // Gravity
+    player.vy += 0.5;
+
+    // Apply motion
+    player.x += player.vx;
+    player.y += player.vy;
+
+    // Clamp to ground
+    if (player.y >= groundY) {
+      player.y = groundY;
+      player.vy = 0;
+      player.onGround = true;
+    }
+
+    // Clamp to canvas
+    player.x = Math.max(0, Math.min(canvas.width - player.w, player.x));
+    enemy.x = Math.max(0, Math.min(canvas.width - enemy.w, enemy.x));
+
+    // Timers
+    if (player.attackCooldown > 0) player.attackCooldown--;
+    if (player.attackTimer > 0) player.attackTimer--;
+    if (enemy.attackCooldown > 0) enemy.attackCooldown--;
+
+    // Enemy logic
+    enemyAI();
+    enemy.x += enemy.vx;
+
+    // Combat
+    applyAttackIfHit();
+
+    // Win/lose
+    if (enemy.hp <= 0) state = STATE.WIN;
+    if (player.hp <= 0) state = STATE.LOSE;
+  }
+
+  // --- Render ---
+  function render() {
+    // Background
+    ctx.fillStyle = "#000";
+    ctx.fillRect(0, 0, canvas.width, canvas.height);
+
+    ctx.fillStyle = "#fff";
+    ctx.font = "18px Arial";
+
+    if (state === STATE.TITLE) {
+      ctx.fillStyle = "#2aff2a";
+      ctx.font = "48px Arial";
+      ctx.fillText("SHORT CIRCUIT SHOWDOWN", 65, 170);
+      ctx.fillStyle = "#fff";
+      ctx.font = "20px Arial";
+      ctx.fillText("Press ENTER to Start", 300, 220);
+      ctx.fillText("Press I for Instructions", 285, 250);
+      return;
+    }
+
+    if (state === STATE.INSTR) {
+      ctx.fillStyle = "#fff";
+      ctx.font = "38px Arial";
+      ctx.fillText("INSTRUCTIONS", 260, 80);
+      ctx.font = "20px Arial";
+      ctx.fillText("Arrow Keys: Move", 310, 140);
+      ctx.fillText("Space: Jump", 310, 170);
+      ctx.fillText("A: Karate Chop", 310, 200);
+      ctx.fillText("S: Knee Thrust", 310, 230);
+      ctx.fillText("D: Kick", 310, 260);
+      ctx.fillStyle = "#2aff2a";
+      ctx.fillText("Press ENTER to go back", 285, 320);
+      return;
+    }
+
+    // HUD
+    ctx.fillStyle = "#fff";
+    drawBar(20, 40, 250, 14, Math.max(0, player.hp) / 100, "Deuce");
+    drawBar(530, 40, 250, 14, Math.max(0, enemy.hp) / 100, "Robot");
+
+    // Ground line
+    ctx.strokeStyle = "#333";
+    ctx.beginPath();
+    ctx.moveTo(0, groundY + 98);
+    ctx.lineTo(canvas.width, groundY + 98);
+    ctx.stroke();
+
+    // Player (green)
+    ctx.fillStyle = "#2aff2a";
+    ctx.fillRect(player.x, player.y, player.w, player.h);
+
+    // Enemy (red)
+    ctx.fillStyle = "#ff2a2a";
+    ctx.fillRect(enemy.x, enemy.y, enemy.w, enemy.h);
+
+    // Attack hitbox (optional debug)
+    const hb = getAttackHitbox();
+    if (hb) {
+      ctx.strokeStyle = "#ffff00";
+      ctx.strokeRect(hb.x, hb.y, hb.w, hb.h);
+    }
+
+    // End screens
+    if (state === STATE.WIN) {
+      ctx.fillStyle = "#2aff2a";
+      ctx.font = "44px Arial";
+      ctx.fillText("YOU WIN!", 300, 190);
+      ctx.fillStyle = "#fff";
+      ctx.font = "18px Arial";
+      ctx.fillText("Press ENTER to return to Title", 260, 230);
+    } else if (state === STATE.LOSE) {
+      ctx.fillStyle = "#ff2a2a";
+      ctx.font = "44px Arial";
+      ctx.fillText("YOU LOSE!", 285, 190);
+      ctx.fillStyle = "#fff";
+      ctx.font = "18px Arial";
+      ctx.fillText("Press ENTER to return to Title", 260, 230);
+    }
+  }
+
+  function loop() {
+    update();
+    render();
+    requestAnimationFrame(loop);
+  }
+
+  loop();
+})();
+</script>
+</body>
+</html>
